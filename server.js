@@ -1,64 +1,53 @@
+// server.js
 require('dotenv').config();
 const express = require('express');
-const cors = require('cors');
+const app = express();
 const path = require('path');
 const Stripe = require('stripe');
 const stripe = Stripe(process.env.STRIPE_SECRET_KEY);
 
-const app = express();
-
-// Configuration CORS plus sécurisée
-app.use(cors({
-  origin: ['http://localhost:3000', 'https://affareparma-github-io.onrender.com/'], // À adapter
-  methods: ['GET', 'POST'],
-  allowedHeaders: ['Content-Type', 'Authorization']
-}));
-
+app.use(express.static('public')); // Contient add_card.html
 app.use(express.json());
-app.use(express.static(path.join(__dirname, 'public')));
 
-// Middleware de validation
-const validateVendorId = (req, res, next) => {
-  const { vendorId } = req.body;
-  if (!vendorId || typeof vendorId !== 'string') {
-    return res.status(400).json({ 
-      success: false,
-      error: 'Un vendorId valide est requis'
-    });
-  }
-  next();
-};
+// Envoie la clé publique à l'app frontend
+app.get('/config', (req, res) => {
+  res.send({ publishableKey: process.env.STRIPE_PUBLISHABLE_KEY });
+});
 
-// Endpoint amélioré
-app.post('/create-setup-intent', validateVendorId, async (req, res) => {
+// Créer un SetupIntent
+app.post('/create-setup-intent', async (req, res) => {
   try {
-    const { vendorId } = req.body;
+    const { customerId } = req.body;
 
     const setupIntent = await stripe.setupIntents.create({
-      payment_method_types: ['card'],
-      metadata: { vendor_id: vendorId }
+      customer: customerId || undefined,
+      usage: 'off_session',
     });
 
-    res.json({
-      success: true,
-      clientSecret: setupIntent.client_secret,
-      setupIntentId: setupIntent.id
-    });
-
-  } catch (error) {
-    console.error('Erreur Stripe:', error);
-    res.status(500).json({
-      success: false,
-      error: 'Erreur lors de la création du SetupIntent',
-      details: error.message
-    });
+    res.send({ clientSecret: setupIntent.client_secret });
+  } catch (err) {
+    res.status(500).send({ error: err.message });
   }
 });
 
-// Gestion des erreurs 404
-app.use((req, res) => {
-  res.status(404).json({ success: false, error: 'Endpoint non trouvé' });
+// Sauvegarder le PaymentMethod
+app.post('/save-payment-method', async (req, res) => {
+  try {
+    const { paymentMethodId, customerId } = req.body;
+
+    // Optionnel : attacher la carte à un customer
+    await stripe.paymentMethods.attach(paymentMethodId, {
+      customer: customerId,
+    });
+
+    res.send({ success: true });
+  } catch (err) {
+    res.status(500).send({ error: err.message });
+  }
 });
 
+// Lancer le serveur
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => console.log(`✅ Serveur en écoute sur le port ${PORT}`));
+app.listen(PORT, () => {
+  console.log(`✅ Server listening on http://localhost:${PORT}`);
+});
