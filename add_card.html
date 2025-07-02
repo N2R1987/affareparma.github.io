@@ -33,9 +33,10 @@
 
     #card-element {
       padding: 12px;
-      border: 1px solid #ccc;
+      border: 1px solid #ddd;
       border-radius: 6px;
       margin-bottom: 20px;
+      background: #fefefe;
     }
 
     #submit {
@@ -47,25 +48,54 @@
       font-size: 16px;
       cursor: pointer;
       width: 100%;
-      transition: background-color 0.3s;
+      transition: all 0.3s;
     }
 
     #submit:hover {
       background-color: #5469d4;
     }
 
+    #submit:disabled {
+      background-color: #cccccc;
+      cursor: not-allowed;
+    }
+
     .message {
       margin-top: 16px;
+      padding: 12px;
+      border-radius: 4px;
       font-size: 14px;
       text-align: center;
+      display: none;
     }
 
     .success {
-      color: green;
+      background-color: #e6ffed;
+      color: #2d8a39;
+      border: 1px solid #2d8a39;
+      display: block;
     }
 
     .error {
-      color: red;
+      background-color: #fff0f0;
+      color: #d32f2f;
+      border: 1px solid #d32f2f;
+      display: block;
+    }
+
+    .loading {
+      display: inline-block;
+      width: 16px;
+      height: 16px;
+      border: 2px solid rgba(255,255,255,0.3);
+      border-radius: 50%;
+      border-top-color: #fff;
+      animation: spin 1s ease-in-out infinite;
+      margin-right: 8px;
+    }
+
+    @keyframes spin {
+      to { transform: rotate(360deg); }
     }
   </style>
 </head>
@@ -74,56 +104,158 @@
     <h2>Ajouter une carte bancaire</h2>
     <form id="payment-form">
       <div id="card-element"></div>
-      <button type="submit" id="submit">Enregistrer la carte</button>
+      <button type="submit" id="submit">
+        <span id="button-text">Enregistrer la carte</span>
+        <span id="button-spinner" class="loading" style="display: none;"></span>
+      </button>
       <div class="message" id="message"></div>
     </form>
   </div>
 
   <script>
-    const stripe = Stripe('pk_test_51RfhkzQs7UJ7rG6nEJboOGUDsENHIfGtE0a1YlVnnYgD4jFGG0O0DZscVptP1asvFfhPPtZNypUVxqXm3NVu3nI700zcbpsEte'); // ✅ ta clé publique ici
+    // Configuration Stripe
+    const stripe = Stripe('pk_test_51RfhkzQs7UJ7rG6nEJboOGUDsENHIfGtE0a1YlVnnYgD4jFGG0O0DZscVptP1asvFfhPPtZNypUVxqXm3NVu3nI700zcbpsEte');
     const elements = stripe.elements();
-    const card = elements.create('card');
+    
+    // Style personnalisé pour l'élément de carte
+    const cardElementStyles = {
+      base: {
+        color: '#32325d',
+        fontFamily: '"Segoe UI", sans-serif',
+        fontSmoothing: 'antialiased',
+        fontSize: '16px',
+        '::placeholder': {
+          color: '#aab7c4'
+        }
+      },
+      invalid: {
+        color: '#fa755a',
+        iconColor: '#fa755a'
+      }
+    };
+
+    const card = elements.create('card', { style: cardElementStyles });
     card.mount('#card-element');
 
+    // Références aux éléments DOM
     const form = document.getElementById('payment-form');
+    const submitBtn = document.getElementById('submit');
+    const buttonText = document.getElementById('button-text');
+    const buttonSpinner = document.getElementById('button-spinner');
     const messageDiv = document.getElementById('message');
 
+    // Gestion de la soumission du formulaire
     form.addEventListener('submit', async (e) => {
       e.preventDefault();
-      messageDiv.textContent = '';
-      messageDiv.className = 'message';
+      
+      // Désactiver le bouton et afficher le spinner
+      submitBtn.disabled = true;
+      buttonText.textContent = 'Traitement en cours...';
+      buttonSpinner.style.display = 'inline-block';
+      messageDiv.style.display = 'none';
 
       try {
-        const res = await fetch('/create-setup-intent', {
+        // 1. Créer un SetupIntent côté serveur
+        const setupIntentResponse = await fetch('/create-setup-intent', {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ vendorId: '12345' }) // 🔁 Remplace par l'ID du vendeur réel
+          headers: { 
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${localStorage.getItem('authToken') || ''}`
+          },
+          body: JSON.stringify({ 
+            vendorId: '12345', // Remplacer par l'ID réel
+            customerId: localStorage.getItem('customerId') // Si applicable
+          })
         });
 
-        const data = await res.json();
-
-        if (!data.clientSecret) {
-          throw new Error('Échec de création du SetupIntent.');
+        const setupIntentData = await setupIntentResponse.json();
+        
+        if (!setupIntentResponse.ok) {
+          throw new Error(
+            setupIntentData.error || 
+            'Échec de la création du SetupIntent'
+          );
         }
 
-        const result = await stripe.confirmCardSetup(data.clientSecret, {
-          payment_method: {
-            card: card
+        // 2. Confirmer la configuration de la carte avec Stripe
+        const { error, setupIntent } = await stripe.confirmCardSetup(
+          setupIntentData.clientSecret, 
+          {
+            payment_method: {
+              card: card,
+              billing_details: {
+                name: document.getElementById('cardholder-name')?.value || 'Client'
+              }
+            }
           }
+        );
+
+        if (error) {
+          throw error;
+        }
+
+        // 3. Sauvegarder le payment method côté serveur
+        const saveResponse = await fetch('/save-payment-method', {
+          method: 'POST',
+          headers: { 
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${localStorage.getItem('authToken') || ''}`
+          },
+          body: JSON.stringify({
+            paymentMethodId: setupIntent.payment_method,
+            vendorId: '12345',
+            customerId: localStorage.getItem('customerId')
+          })
         });
 
-        if (result.error) {
-          messageDiv.textContent = '❌ ' + result.error.message;
-          messageDiv.classList.add('error');
-        } else {
-          messageDiv.textContent = '✅ Carte enregistrée avec succès !';
-          messageDiv.classList.add('success');
-          console.log('ID du moyen de paiement:', result.setupIntent.payment_method);
-          // 📌 Tu peux envoyer le result.setupIntent.payment_method à Supabase ici
+        const saveData = await saveResponse.json();
+        
+        if (!saveResponse.ok) {
+          throw new Error(
+            saveData.error || 
+            'Échec de la sauvegarde du moyen de paiement'
+          );
         }
+
+        // Succès - Afficher le message et réinitialiser le formulaire
+        showMessage('success', '✅ Carte enregistrée avec succès !');
+        form.reset();
+        
+        // Redirection ou mise à jour de l'UI après 2 secondes
+        setTimeout(() => {
+          window.location.href = '/payment-methods'; // Adapter selon le besoin
+        }, 2000);
+
       } catch (error) {
-        messageDiv.textContent = '❌ ' + error.message;
-        messageDiv.classList.add('error');
+        console.error('Erreur:', error);
+        showMessage('error', `❌ Erreur: ${error.message}`);
+      } finally {
+        // Réactiver le bouton
+        submitBtn.disabled = false;
+        buttonText.textContent = 'Enregistrer la carte';
+        buttonSpinner.style.display = 'none';
+      }
+    });
+
+    // Afficher les messages d'état
+    function showMessage(type, message) {
+      messageDiv.textContent = message;
+      messageDiv.className = 'message ' + type;
+      messageDiv.style.display = 'block';
+      
+      // Faire défiler jusqu'au message si erreur
+      if (type === 'error') {
+        messageDiv.scrollIntoView({ behavior: 'smooth' });
+      }
+    }
+
+    // Gestion des erreurs en temps réel sur le champ de carte
+    card.on('change', (event) => {
+      const displayError = document.getElementById('card-errors');
+      if (event.error) {
+        showMessage('error', event.error.message);
+      } else {
+        messageDiv.style.display = 'none';
       }
     });
   </script>
