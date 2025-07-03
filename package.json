@@ -4,15 +4,17 @@
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
+    "build": "mkdir -p public && cp add_card.html public/",
     "test": "echo \"Error: no test specified\" && exit 1"
   },
   "dependencies": {
     "cors": "^2.8.5",
     "dotenv": "^17.0.0",
-    "express": "^5.1.0",
+    "express": "^5.1.0", 
     "stripe": "^18.2.1"
   },
   "engines": {
-    "node": ">=18.0.0"
+    "node": ">=18.0.0",
+    "npm": ">=9.0.0"
   }
 }
