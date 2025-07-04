@@ -4,7 +4,7 @@
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
-    "build": "mkdir -p public && cp add_card.html public/",
+    
     "test": "echo \"Error: no test specified\" && exit 1"
   },
   "dependencies": {
