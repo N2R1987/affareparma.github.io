@@ -1,0 +1,202 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Abonnement Premium – 9,99 €</title>
+  <script src="https://js.stripe.com/v3/"></script>
+  <style>
+    body {
+      font-family: 'Segoe UI', sans-serif;
+      background: hsl(0, 0%, 100%);
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      height: 100vh;
+      margin: 0;
+    }
+
+    .container {
+      background: rgb(255, 255, 255);
+      padding: 2rem 2.5rem;
+      border-radius: 12px;
+      box-shadow: 0 4px 16px rgba(0,0,0,0.1);
+      max-width: 460px;
+      width: 100%;
+    }
+
+    .logo {
+  display: block;
+  margin: 0 auto 20px auto;
+  width: 120px;
+  height: 120px;
+  object-fit: cover;
+  border-radius: 50%;
+  box-shadow: 0 0 10px rgba(0,0,0,0.1);
+}
+
+    h2 {
+      text-align: center;
+      color: #333;
+      margin-bottom: 20px;
+    }
+
+    input {
+      width: 100%;
+      padding: 12px;
+      margin-bottom: 12px;
+      border-radius: 6px;
+      border: 1px solid #ccc;
+      font-size: 15px;
+    }
+
+    #card-element {
+      padding: 12px;
+      border: 1px solid #ccc;
+      border-radius: 6px;
+      background: #fafafa;
+      margin-bottom: 20px;
+    }
+
+    button {
+      width: 100%;
+      padding: 14px;
+      background: #5469d4;
+      color: white;
+      border: none;
+      border-radius: 6px;
+      font-size: 16px;
+      cursor: pointer;
+      transition: background 0.3s ease;
+    }
+
+    button:hover {
+      background: #4353c3;
+    }
+
+    .message {
+      margin-top: 16px;
+      font-size: 14px;
+      text-align: center;
+      display: none;
+    }
+
+    .success {
+      color: #2d8a39;
+      background: #e6ffed;
+      padding: 12px;
+      border-radius: 6px;
+    }
+
+    .error {
+      color: #d32f2f;
+      background: #fff0f0;
+      padding: 12px;
+      border-radius: 6px;
+    }
+
+    .loading {
+      width: 16px;
+      height: 16px;
+      border: 2px solid rgba(255,255,255,0.3);
+      border-radius: 50%;
+      border-top-color: #fff;
+      animation: spin 1s ease-in-out infinite;
+      display: inline-block;
+      margin-left: 10px;
+    }
+
+    @keyframes spin {
+      to { transform: rotate(360deg); }
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <img src="https://github.com/N2R1987/affareparma.github.io/blob/main/images/logo.png?raw=true" alt="Logo" class="logo" />
+
+    <h2>Souscrire Premium – 9,99 €</h2>
+    <form id="payment-form">
+      <input type="text" id="name" placeholder="Nom complet" required />
+      <input type="email" id="email" placeholder="Email" required />
+      <div id="card-element"></div>
+      <button type="submit" id="submit">
+        <span id="button-text">Payer 9,99 €</span>
+        <span id="button-spinner" class="loading" style="display:none;"></span>
+      </button>
+      <div id="message" class="message"></div>
+    </form>
+  </div>
+
+  <script>
+    let stripe, card;
+
+    async function initialize() {
+      const res = await fetch('/config');
+      const { publishableKey } = await res.json();
+
+      stripe = Stripe(publishableKey);
+      const elements = stripe.elements();
+      card = elements.create('card');
+      card.mount('#card-element');
+    }
+
+    document.addEventListener('DOMContentLoaded', initialize);
+
+    document.getElementById('payment-form').addEventListener('submit', async (e) => {
+      e.preventDefault();
+
+      const name = document.getElementById('name').value.trim();
+      const email = document.getElementById('email').value.trim();
+      const messageDiv = document.getElementById('message');
+      const buttonText = document.getElementById('button-text');
+      const spinner = document.getElementById('button-spinner');
+      const submitBtn = document.getElementById('submit');
+
+      if (!name || !email) {
+        showMessage('error', 'Tous les champs sont requis.');
+        return;
+      }
+
+      submitBtn.disabled = true;
+      spinner.style.display = 'inline-block';
+      buttonText.textContent = 'Paiement en cours...';
+
+      try {
+        const paymentIntentRes = await fetch('/create-payment-intent', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ email, name, amount: 999 }) // 9.99€ = 999 cents
+        });
+
+        const { clientSecret } = await paymentIntentRes.json();
+
+        const result = await stripe.confirmCardPayment(clientSecret, {
+          payment_method: {
+            card,
+            billing_details: { name, email }
+          }
+        });
+
+        if (result.error) throw result.error;
+
+        showMessage('success', '✅ Paiement confirmé, merci ! 🎉');
+
+      } catch (error) {
+        showMessage('error', `❌ ${error.message}`);
+      } finally {
+        spinner.style.display = 'none';
+        buttonText.textContent = 'Payer 9,99 €';
+        submitBtn.disabled = false;
+      }
+    });
+
+    function showMessage(type, msg) {
+      const div = document.getElementById('message');
+      div.className = 'message ' + type;
+      div.textContent = msg;
+      div.style.display = 'block';
+    }
+  </script>
+</body>
+</html>
