@@ -1,137 +1,214 @@
-// server.js - Version corrigée et fonctionnelle
 require('dotenv').config();
-const fs = require('fs');
-const path = require('path');
 const express = require('express');
 const cors = require('cors');
 const Stripe = require('stripe');
+const fs = require('fs');
+const path = require('path');
 
-// Initialisations
 const app = express();
 const stripe = Stripe(process.env.STRIPE_SECRET_KEY);
-const publicDir = path.join(__dirname, 'public');
+const logFile = path.join(__dirname, 'payment_logs.json');
 
-// Vérification/Création du dossier public
-if (!fs.existsSync(publicDir)) {
-  fs.mkdirSync(publicDir);
-  console.log('Dossier public créé');
-}
-
-// Middlewares
+// Middleware amélioré
 app.use(cors({
   origin: process.env.NODE_ENV === 'production' 
-    ? ['https://affareparma.github.io', 'https://affareparma-github-io-2.onrender.com'] 
+    ? ['https://votre-domaine.com', 'https://affareparma-github-io-2.onrender.com']
     : ['http://localhost:3000'],
-  credentials: true
+  methods: ['GET', 'POST', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization']
 }));
-app.use(express.json());
-app.use(express.static(publicDir));
+app.use(express.json({ limit: '10kb' }));
+app.use(express.static('public'));
 
-// Route pour vérifier l'accès aux fichiers statiques
-app.get('/check-files', (req, res) => {
-  try {
-    const files = fs.readdirSync(publicDir);
-    res.json({
-      status: 'success',
-      files: files,
-      publicDir: publicDir
-    });
-  } catch (err) {
-    res.status(500).json({
-      status: 'error',
-      message: err.message,
-      publicDir: publicDir
-    });
-  }
-});
-
-// Route principale - Utilise payment.html comme fichier par défaut
-app.get('/', (req, res) => {
-  // Liste des fichiers à essayer dans l'ordre de préférence
-  const possibleFiles = ['payment.html', 'add_card.html', 'index.html'];
+// Logger des transactions
+const logTransaction = async (data) => {
+  const logData = {
+    timestamp: new Date().toISOString(),
+    ...data
+  };
   
-  for (const file of possibleFiles) {
-    const filePath = path.join(publicDir, file);
-    if (fs.existsSync(filePath)) {
-      return res.sendFile(filePath);
-    }
-  }
-  
-  // Aucun fichier trouvé
-  res.status(404).send(`
-    <h1>Fichier non trouvé</h1>
-    <p>Aucune page d'accueil trouvée (payment.html, add_card.html ou index.html)</p>
-    <p>Fichiers présents dans ${publicDir}: ${fs.readdirSync(publicDir).join(', ')}</p>
-  `);
-});
+  fs.appendFileSync(logFile, JSON.stringify(logData) + '\n');
+};
 
-// Routes Stripe
-app.get('/config', (req, res) => {
+// Vérification initiale
+app.get('/health', (req, res) => {
   res.json({ 
-    publishableKey: process.env.STRIPE_PUBLISHABLE_KEY,
     status: 'ok',
-    serverVersion: '1.0.1'
+    stripe: !!process.env.STRIPE_SECRET_KEY,
+    environment: process.env.NODE_ENV 
   });
 });
 
-app.post('/create-setup-intent', async (req, res) => {
+// Routes améliorées
+app.get('/config', (req, res) => {
+  res.json({ 
+    publishableKey: process.env.STRIPE_PUBLISHABLE_KEY,
+    apiVersion: '2023-08-16' // Version API Stripe fixe
+  });
+});
+
+app.post('/create-payment-intent', async (req, res) => {
   try {
-    const { customerId } = req.body;
-    const setupIntent = await stripe.setupIntents.create({
-      customer: customerId || undefined,
-      usage: 'off_session',
+    const { amount, email, name } = req.body;
+
+    // Validation renforcée
+    if (!amount || isNaN(amount) || !email || !name) {
+      return res.status(400).json({ 
+        error: 'Paramètres invalides',
+        details: {
+          amount: typeof amount,
+          email: typeof email,
+          name: typeof name
+        }
+      });
+    }
+
+    // Création du client avec plus de métadonnées
+    const customer = await stripe.customers.create({
+      email,
+      name,
+      metadata: {
+        app: 'Patient Sécurisé',
+        platform: 'Web'
+      }
     });
+
+    const paymentIntent = await stripe.paymentIntents.create({
+      amount: amount, // Conversion en centimes
+      currency: 'eur',
+      customer: customer.id,
+      description: `Paiement Premium - ${name}`,
+      metadata: {
+        customer_name: name,
+        service: 'Patient Sécurisé Premium'
+      },
+      payment_method_types: ['card'],
+      receipt_email: email // Envoi automatique du reçu
+    });
+
+    // Journalisation détaillée
+    await logTransaction({
+      type: 'payment_intent_created',
+      payment_intent_id: paymentIntent.id,
+      amount: paymentIntent.amount,
+      customer: customer.id,
+      status: paymentIntent.status
+    });
+
     res.json({ 
-      clientSecret: setupIntent.client_secret,
-      status: 'success'
+      clientSecret: paymentIntent.client_secret,
+      paymentId: paymentIntent.id,
+      customerId: customer.id
     });
-  } catch (err) {
-    console.error('Erreur SetupIntent:', err);
+
+  } catch (error) {
+    console.error('Erreur Stripe:', error);
+    
+    await logTransaction({
+      type: 'error',
+      error: error.message,
+      stack: error.stack
+    });
+
     res.status(500).json({ 
-      error: err.message,
-      status: 'error'
+      error: 'Erreur de traitement du paiement',
+      ...(process.env.NODE_ENV !== 'production' && { 
+        details: error.message,
+        stack: error.stack 
+      })
     });
   }
 });
 
-app.post('/save-payment-method', async (req, res) => {
+// Nouvelle route pour vérifier les paiements
+app.get('/payment/:id', async (req, res) => {
   try {
-    const { paymentMethodId, customerId } = req.body;
-    await stripe.paymentMethods.attach(paymentMethodId, { customer: customerId });
-    res.json({ 
-      success: true,
-      status: 'payment_method_saved'
+    const payment = await stripe.paymentIntents.retrieve(req.params.id);
+    
+    res.json({
+      status: payment.status,
+      amount: payment.amount / 100, // Conversion en euros
+      currency: payment.currency,
+      customer: payment.customer,
+      created: new Date(payment.created * 1000),
+      charges: payment.charges.data.map(c => ({
+        amount: c.amount / 100,
+        receipt_url: c.receipt_url,
+        status: c.status
+      }))
     });
-  } catch (err) {
-    console.error('Erreur sauvegarde:', err);
-    res.status(500).json({ 
-      error: err.message,
-      status: 'error'
-    });
+  } catch (error) {
+    res.status(404).json({ error: 'Paiement non trouvé' });
   }
 });
 
-// Gestion des erreurs
-app.use((req, res) => {
-  res.status(404).send('Page non trouvée');
+// Webhook pour les événements Stripe (optionnel mais recommandé)
+app.post('/stripe-webhook', express.raw({ type: 'application/json' }), async (req, res) => {
+  const sig = req.headers['stripe-signature'];
+  let event;
+
+  try {
+    event = stripe.webhooks.constructEvent(
+      req.body,
+      sig,
+      process.env.STRIPE_WEBHOOK_SECRET
+    );
+  } catch (err) {
+    return res.status(400).send(`Webhook Error: ${err.message}`);
+  }
+
+  // Gestion des événements
+  switch (event.type) {
+    case 'payment_intent.succeeded':
+      const paymentIntent = event.data.object;
+      await logTransaction({
+        type: 'payment_succeeded',
+        payment_intent_id: paymentIntent.id,
+        amount: paymentIntent.amount,
+        customer: paymentIntent.customer
+      });
+      break;
+      
+    case 'payment_intent.failed':
+      const failedIntent = event.data.object;
+      await logTransaction({
+        type: 'payment_failed',
+        payment_intent_id: failedIntent.id,
+        error: failedIntent.last_payment_error?.message
+      });
+      break;
+  }
+
+  res.json({ received: true });
 });
 
+// Gestion des erreurs améliorée
 app.use((err, req, res, next) => {
   console.error(err.stack);
-  res.status(500).send('Erreur serveur');
+  
+  fs.appendFileSync(logFile, JSON.stringify({
+    timestamp: new Date().toISOString(),
+    type: 'server_error',
+    error: err.message,
+    stack: err.stack,
+    path: req.path
+  }) + '\n');
+
+  res.status(500).json({ 
+    error: 'Erreur serveur',
+    requestId: req.id
+  });
 });
 
-// Démarrage
+// Démarrer le serveur
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
+  // Créer le fichier de logs s'il n'existe pas
+  if (!fs.existsSync(logFile)) {
+    fs.writeFileSync(logFile, '');
+  }
+  
   console.log(`✅ Serveur démarré sur le port ${PORT}`);
   console.log(`Environnement: ${process.env.NODE_ENV || 'development'}`);
-  console.log(`Dossier public: ${publicDir}`);
-  
-  try {
-    const files = fs.readdirSync(publicDir);
-    console.log(`Contenu du dossier public: ${files.join(', ')}`);
-  } catch (err) {
-    console.error(`Erreur lecture dossier public: ${err.message}`);
-  }
+  console.log(`Mode Stripe: ${process.env.STRIPE_SECRET_KEY?.includes('test') ? 'TEST' : 'PRODUCTION'}`);
 });
